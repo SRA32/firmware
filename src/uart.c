@@ -1,6 +1,6 @@
 #include "uart.h"
 
-#define UART_BASE  0xF0020000
+#define UART_BASE  0xF0110000
 
 #define UART_THR   0x00
 #define UART_IER   0x04

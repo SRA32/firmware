@@ -1,60 +1,144 @@
 #include <stdint.h>
+#include <string.h>
+#include <libfdt.h>
 #include "uart.h"
-#include "sic.h"
+#include "ic.h"
 #include "printf.h"
 #include "pl110.h"
-#include "earlycon.h"
+#include "flanterm/flanterm.h"
+#include "flanterm/flanterm_backends/fb.h"
+#include "ahci.h"
+#include "lock.h"
 
-#define PCI_ECAM_BASE 0xC0000000
+void internal_local_handler();
 
-uint16_t pcie_read16(uint8_t bus, uint8_t dev, uint8_t func, uint8_t reg)
+struct flanterm_context *ft_ctx;
+
+typedef struct {
+    uint32_t excb;
+    uint32_t intb;
+    uint32_t locb;
+} intc_t;
+
+intc_t intc;
+
+void flanterm_init()
 {
-    uint32_t addr = (PCI_ECAM_BASE | (bus << 20) | (dev << 15) | (func << 12)) + reg;
-    return *((uint16_t*)addr);
+    ft_ctx = flanterm_fb_init(
+        NULL,
+        NULL,
+        (uint32_t*)0x400000, 640, 480, 640 * 4,
+        8, 16,
+        8, 8,
+        8, 0,
+        NULL,
+        NULL, NULL,
+        NULL, NULL,
+        NULL, NULL,
+        NULL, 0, 0, 1,
+        1, 1,
+        5,
+        0,
+        true
+    );
 }
 
-uint32_t pcie_read32(uint8_t bus, uint8_t dev, uint8_t func, uint8_t reg)
+void int_handler(void)
 {
-    uint32_t addr = (PCI_ECAM_BASE | (bus << 20) | (dev << 15) | (func << 12)) + reg;
-    return *((uint32_t*)addr);
+    printf("Handled interrupt!\n");
+    asm ("iret");
 }
 
-void pcie_write32(uint8_t bus, uint8_t dev, uint8_t func, uint8_t reg, uint32_t val)
+void local_handler(void)
 {
-    uint32_t addr = (PCI_ECAM_BASE | (bus << 20) | (dev << 15) | (func << 12)) + reg;
-    *((uint32_t*)addr) = val;
-}
+    uint32_t reason = lic_reason();
+    uint32_t cpu = 0;
 
-void main(void)
-{
-    uart_puts("Hello world from SRA32 Apollo firmware.\n");
-    pl110_init();
-    printf("Hello earlycon!\n");
+    asm (
+        "sw $r26, %0"
+        : "=m"(cpu)
+    );
 
-    uint16_t vendor = pcie_read16(0, 1, 0, 0);
-    uint16_t device = pcie_read16(0, 1, 0, 2);
+    printf("Local interrupt handled.\n");
 
-    // Since we're firmware, we gotta allocate space for it!
-    pcie_write32(0, 1, 0, 0x24, 0xFFFFFFFF);
-    uint32_t ahci_size = pcie_read32(0, 1, 0, 0x24);
-    printf("ICH9-AHCI (%x:%x) requires: 0x%x.\n", vendor, device, ahci_size);
+    if (reason & REASON_TIMER)
+    {
+        printf("Timer interrupt for CPU #%d handled!\n", cpu);
+        lic_clear(REASON_TIMER);
+    }
 
-    while (1) {
+    if (reason & REASON_IPI)
+    {
+        printf("IPI for CPU #%d handled!\n", cpu);
+        lic_clear(REASON_IPI);
     }
 }
 
-int printf(const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    char buf[1024];
+void timer_arm(uint64_t deadline)
+{
+    uint32_t low = (uint32_t)deadline;
+    uint32_t high = (uint32_t)(deadline >> 32);
 
-    int len = vsnprintf(buf, 1024, fmt, ap);
-
-    earlycon_puts(buf);
-
-    return len;
+    asm (
+        "mov $r0, %0\n"
+        "mov $r1, %1\n"
+        "wcr $r0, 9\n" // Write low to TDEAD0
+        "wcr $r1, 10\n" // Write high to TDEAD1
+        : : "r"(low), "r"(high) : "$r0", "$r1"
+    );
 }
 
-int puts(const char *str) {
-    return printf("%s\n", str);
+bool bsp_started = false;
+uint32_t ap_done = 0;
+
+spinlock_t ap_lock = SPINLOCK_INIT;
+
+void ap_start()
+{
+    while (!bsp_started);
+
+    uint32_t cpu = 0;
+
+    asm (
+        "sw $r26, %0"
+        : "=m"(cpu)
+    );
+
+    printf("Hello from CPU %d\n", cpu);
+
+    lock(&ap_lock); ap_done++; unlock(&ap_lock);
+
+    while (1)
+    {
+    }
 }
+
+void main(void *fdt)
+{
+    uart_puts("Hello world from SRA32 Apollo firmware.\n");
+    pl110_init();
+    flanterm_init();
+
+    printf("Flanterm initialised.\n");
+    bsp_started = true;
+
+    while (ap_done < 3);
+    printf("All cores have been initialized.\n");
+
+    while (1)
+    {
+    }
+}
+
+void _putchar(char character)
+{
+    if (character == '\n')
+    {
+        flanterm_write(ft_ctx, "\n\r", 2);
+        return;
+    }
+
+    char buf[] = {character, 0};
+    flanterm_write(ft_ctx, buf, sizeof(buf) - 1);
+}
+

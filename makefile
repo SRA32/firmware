@@ -1,11 +1,11 @@
-AS_SRC := $(shell find src -type f -name "*.s")
+AS_SRC := src/start.s src/lock.s
 C_SRC := $(shell find src -type f -name "*.c")
 
 OBJ := $(patsubst src/%.s,out/%.o,$(AS_SRC))
 OBJ += $(patsubst src/%.c,out/%.o,$(C_SRC))
 
 QFLAGS := -m 2G -serial stdio -kernel out/firmware.bin \
-	-drive file=test.img,format=raw,if=none,id=hd0
+	-drive file=test.img,format=raw,if=ide,index=0 -smp 4
 
 all: out/firmware.bin
 

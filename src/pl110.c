@@ -1,6 +1,6 @@
 #include "pl110.h"
 
-#define PL110_BASE 0xF0040000
+#define PL110_BASE 0xF0120000
 
 #define LCDTIMING0 0x00
 #define LCDTIMING1 0x04
@@ -15,7 +15,7 @@ uint32_t *fb;
 
 void pl110_init()
 {
-    fb = (uint32_t*)0x200000;
+    fb = (uint32_t*)0x400000;
 
     lcd[LCDTIMING0 / 4] = 0x9C;
     lcd[LCDTIMING1 / 4] = 479;
